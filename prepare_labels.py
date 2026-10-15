@@ -1,9 +1,25 @@
-import pandas as pd
+import argparse
 import os
+import sys
 import glob
 import cv2
 
+import pandas as pd
+
 from tqdm import tqdm
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Convert LISA traffic-light CSV annotations to YOLO label files.')
+    parser.add_argument('--annotation-root', default='data/lisa/lisa-traffic-light-dataset/Annotations/Annotations',
+                        help='folder containing dayTrain/ and nightTrain/ annotation clip folders')
+    parser.add_argument('--image-root', default='data/lisa/lisa-traffic-light-dataset',
+                        help='folder containing dayTrain/ and nightTrain/ frames')
+    parser.add_argument('--output', default='data/lisa/input',
+                        help='output folder (images -> <output>/images, labels -> <output>/labels)')
+    return parser.parse_args()
+
 
 show_info = True
 images_with_required_classes = 0
@@ -23,8 +39,23 @@ root_folder_name_mapper = {
     'nightTrain': 'nightClip'
 }
 
-annotation_root = '../input/lisa_traffic_light_dataset/lisa-traffic-light-dataset/Annotations/Annotations'
-image_root = '../input/lisa_traffic_light_dataset/lisa-traffic-light-dataset'
+opt = parse_args()
+annotation_root = opt.annotation_root
+image_root = opt.image_root
+labels_dir = os.path.join(opt.output, 'labels')
+images_dir = os.path.join(opt.output, 'images')
+
+if not os.path.isdir(annotation_root) or not os.path.isdir(image_root):
+    sys.exit(
+        'LISA traffic-light dataset not found (no dataset is downloaded by this script).\n'
+        '  looked for annotations: %s\n'
+        '  looked for images:      %s\n'
+        'Place the dataset under data/lisa/ (Kaggle: "lisa-traffic-light-dataset"), or pass\n'
+        '--annotation-root / --image-root pointing at it.' % (annotation_root, image_root)
+    )
+
+os.makedirs(labels_dir, exist_ok=True)
+os.makedirs(images_dir, exist_ok=True)
 
 
 def get_coords(tag, x_min, y_min, x_max, y_max, images_with_required_classes):
@@ -69,15 +100,22 @@ def get_coords(tag, x_min, y_min, x_max, y_max, images_with_required_classes):
             return label, x_center, y_center, w, h
 
 for root_folder_name in root_folder_names:
-    folder_names = os.listdir(f"{annotation_root}/{root_folder_name}")
+    root_path = f"{annotation_root}/{root_folder_name}"
+    if not os.path.isdir(root_path):
+        print(f"Skipping {root_folder_name}: not found at {root_path}")
+        continue
+    folder_names = os.listdir(root_path)
     num_folders = len(folder_names)
     mapped_clip = root_folder_name_mapper[root_folder_name]
 
     for i in range(1,  num_folders+1): 
+        csv_path = f"{annotation_root}/{root_folder_name}/{mapped_clip}{i}/frameAnnotationsBOX.csv"
+        if not os.path.isfile(csv_path):
+            print(f"Skipping {mapped_clip}{i}: no annotations at {csv_path}")
+            continue
         print('##### NEW CSV AND IMAGES ####')
         # read the annotation CSV file
-        df = pd.read_csv(f"{annotation_root}/{root_folder_name}/{mapped_clip}{i}/frameAnnotationsBOX.csv", 
-                         delimiter=';')
+        df = pd.read_csv(csv_path, delimiter=';')
         # get all image paths
         image_paths = glob.glob(f"{image_root}/{root_folder_name}/{root_folder_name}/{mapped_clip}{i}/frames/*.jpg")
         image_paths.sort()
@@ -102,6 +140,9 @@ for root_folder_name in root_folder_names:
         # iterate through all image paths
         for i, image_path in tqdm(enumerate(image_paths), total=len(image_paths)):
             image_name = image_path.split(os.path.sep)[-1]
+            label_path = os.path.join(labels_dir, image_name.split('.')[0] + '.txt')
+            if os.path.exists(label_path):
+                os.remove(label_path)  # idempotent: re-running must not duplicate labels
             # iterate through all CSV rows
             for j in range(len(df)):
                 if file_counter < len(df):
@@ -113,7 +154,7 @@ for root_folder_name in root_folder_names:
                                                     x_max[file_counter],
                                                     y_max[file_counter], 
                                                     images_with_required_classes)
-                        with open(f"../input/lisa_traffic_light_dataset/input/labels/{image_name.split('.')[0]}.txt", 'a+') as f:
+                        with open(label_path, 'a+') as f:
                             if type(label) == int:
                                 f.writelines(f"{label} {x} {y} {w} {h}\n")
                                 f.close()
@@ -121,7 +162,7 @@ for root_folder_name in root_folder_names:
                                 f.writelines(f"")
                                 f.close()
                             image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-                            cv2.imwrite(f"../input/lisa_traffic_light_dataset/input/images/{image_name}", image)
+                            cv2.imwrite(os.path.join(images_dir, image_name), image)
                             file_counter += 1
                         # continue
                     if file_name != image_name:
