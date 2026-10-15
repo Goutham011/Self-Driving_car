@@ -127,7 +127,9 @@ def get_lane_lines(color_image, solid_lines=True):
                                            min_line_len=HOUGH_MIN_LINE_LEN,
                                            max_line_gap=HOUGH_MAX_LINE_GAP)
 
-    detected_lines = [Line(l[0][0], l[0][1], l[0][2], l[0][3]) for l in detected_lines]
+    # HoughLinesP returns (N,1,4) on OpenCV 4.x but (N,4) on some builds;
+    # reshape each entry to a flat 4-tuple of x1,y1,x2,y2
+    detected_lines = [Line(*np.asarray(l).reshape(-1)) for l in detected_lines]
 
     if not solid_lines:
         return detected_lines
