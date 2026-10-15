@@ -1,0 +1,46 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Datasets & caches - rebuild with the bundled scripts
+data/cache/
+data/vehicles/
+data/non-vehicles/
+
+# ...but keep the trained classifier pickles (272 KB) so the repo works out of the box
+!data/models/
+!data/models/*.pickle
+
+# Model weights - auto-downloaded on first use
+data/weights/
+*.caffemodel
+*.weights
+*.onnx
+*.pb
+
+# Videos are generated or downloaded; keep the repo light
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# ...but keep the small demo videos referenced by the README / quick start
+!data/lane/test_videos/*.mp4
+!data/ssd/ssd_test_video.mp4
+
+# Pipeline outputs
+out/
+
+# Logs
+*.log
