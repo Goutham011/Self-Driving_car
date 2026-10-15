@@ -62,6 +62,9 @@ def _fetch(url, dest, expected=None):
     """Download url -> dest. Tries urllib (certifi CA bundle), then curl (system trust store)."""
     tmp = dest + '.part'
     errors = []
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     if os.path.exists(tmp):
         os.remove(tmp)
 
