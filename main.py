@@ -1,68 +1,123 @@
-import matplotlib.pyplot as plt
-import cv2
+"""
+Lane detection entry point.
+
+Examples:
+    python main.py --input data/lane/test_images --output out/lane
+    python main.py --input data/lane/test_video.mp4 --output out/lane --no-display
+    python main.py --input data/lane/test_images/challenge_frame.jpg --no-display
+"""
+
+import argparse
 import os
-from os.path import join, basename
 from collections import deque
+from os.path import basename, join
+
+import cv2
+
 from lane_detection import color_frame_pipeline
 
-if __name__ == '__main__':
+IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp'}
+VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv'}
 
-    resize_h, resize_w = 540, 960
 
-    verbose = True
-    if verbose:
-        plt.ion()
-        figManager = plt.get_current_fig_manager()
-        if hasattr(figManager, 'window'):
-            figManager.window.showMaximized()
+def process_image(in_path, out_path, display):
+    image = cv2.imread(in_path, cv2.IMREAD_COLOR)
+    if image is None:
+        print('Could not read image: {}'.format(in_path))
+        return False
 
-    choice = input("Process images (i) or videos (v)? ").strip().lower()
+    result = color_frame_pipeline([image], solid_lines=True)
+    cv2.imwrite(out_path, result)
 
-    if choice == 'i':
-        # Process images only
-        test_images_dir = join('data', 'test_images')
-        test_images = [join(test_images_dir, name) for name in os.listdir(test_images_dir)]
+    if display:
+        cv2.imshow('lane detection', result)
+        cv2.waitKey(0)
 
-        for test_img in test_images:
-            print('Processing image: {}'.format(test_img))
-            out_path = join('out', 'images', basename(test_img))
-            in_image = cv2.cvtColor(cv2.imread(test_img, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
-            out_image = color_frame_pipeline([in_image], solid_lines=True)
-            cv2.imwrite(out_path, cv2.cvtColor(out_image, cv2.COLOR_RGB2BGR))
-            if verbose:
-                plt.imshow(out_image)
-                plt.waitforbuttonpress()
-        plt.close('all')
+    print('{} -> {}'.format(in_path, out_path))
+    return True
 
-    elif choice == 'v':
-        # Process videos only
-        test_videos_dir = join('data', 'test_videos')
-        test_videos = [join(test_videos_dir, name) for name in os.listdir(test_videos_dir)]
 
-        for test_video in test_videos:
-            print('Processing video: {}'.format(test_video))
+def process_video(in_path, out_path, display, buffer_size=10):
+    cap = cv2.VideoCapture(in_path)
+    if not cap.isOpened():
+        print('Could not open video: {}'.format(in_path))
+        return False
 
-            cap = cv2.VideoCapture(test_video)
-            out = cv2.VideoWriter(join('out', 'videos', basename(test_video)),
-                                  fourcc=cv2.VideoWriter_fourcc(*'DIVX'),
-                                  fps=20.0, frameSize=(resize_w, resize_h))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-            frame_buffer = deque(maxlen=10)
-            while cap.isOpened():
-                ret, color_frame = cap.read()
-                if ret:
-                    color_frame = cv2.cvtColor(color_frame, cv2.COLOR_BGR2RGB)
-                    color_frame = cv2.resize(color_frame, (resize_w, resize_h))
-                    frame_buffer.append(color_frame)
-                    blend_frame = color_frame_pipeline(frames=frame_buffer, solid_lines=True, temporal_smoothing=True)
-                    out.write(cv2.cvtColor(blend_frame, cv2.COLOR_RGB2BGR))
-                    cv2.imshow('blend', cv2.cvtColor(blend_frame, cv2.COLOR_RGB2BGR))
-                    cv2.waitKey(1)
-                else:
-                    break
-            cap.release()
-            out.release()
-            cv2.destroyAllWindows()
+    writer = cv2.VideoWriter(out_path,
+                             fourcc=cv2.VideoWriter_fourcc(*'mp4v'),
+                             fps=fps,
+                             frameSize=(width, height))
 
+    frame_buffer = deque(maxlen=buffer_size)
+    frames_done = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_buffer.append(frame)
+        blended = color_frame_pipeline(frames=list(frame_buffer),
+                                       solid_lines=True,
+                                       temporal_smoothing=True)
+        writer.write(blended)
+        frames_done += 1
+
+        if display:
+            cv2.imshow('lane detection', blended)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    cap.release()
+    writer.release()
+    if display:
+        cv2.destroyAllWindows()
+
+    print('{} -> {} ({} frames)'.format(in_path, out_path, frames_done))
+    return frames_done > 0
+
+
+def collect_images(path):
+    if os.path.isfile(path):
+        return [path]
+    return sorted(join(path, name) for name in os.listdir(path)
+                  if os.path.splitext(name)[1].lower() in IMAGE_EXTS)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Lane detection pipeline')
+    parser.add_argument('--input', required=True,
+                        help='image file, directory of images, or video file')
+    parser.add_argument('--output', default='out/lane',
+                        help='output directory (default: out/lane)')
+    parser.add_argument('--no-display', action='store_true',
+                        help='do not open preview windows')
+    args = parser.parse_args()
+
+    if not os.path.exists(args.input):
+        print('Input does not exist: {}'.format(args.input))
+        return 1
+
+    os.makedirs(args.output, exist_ok=True)
+    display = not args.no_display
+    ext = os.path.splitext(args.input)[1].lower()
+
+    if ext in VIDEO_EXTS:
+        ok = process_video(args.input, join(args.output, 'lanes_' + basename(args.input)), display)
+    elif os.path.isdir(args.input) or ext in IMAGE_EXTS:
+        ok = False
+        for image_path in collect_images(args.input):
+            out_path = join(args.output, basename(image_path))
+            ok = process_image(image_path, out_path, display) or ok
     else:
-        print("Invalid choice, please run again and enter 'i' or 'v'.")
+        print('Unsupported input type: {}'.format(args.input))
+        return 1
+
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
