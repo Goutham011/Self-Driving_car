@@ -1,22 +1,30 @@
-from functions_detection import *
-from SSD import process_frame_bgr_with_SSD, get_SSD_model
-from vehicle import Vehicle
+import argparse
 import os
 import os.path as path
 
+import cv2
+import numpy as np
 
-# global deep network model
-ssd_model, bbox_helper, color_palette = get_SSD_model()
+from SSD import (get_SSD_model, process_frame_bgr_with_SSD, VEHICLE_CLASS_IDS)
+from vehicle import Vehicle
+
+IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
+VIDEO_EXTS = ('.mp4', '.avi', '.mov', '.mkv', '.m4v')
 
 
-def process_pipeline(frame, verbose=False):
+def process_pipeline(frame, ssd_model, bbox_helper, color_palette=None,
+                     allow_classes=VEHICLE_CLASS_IDS, min_confidence=0.3,
+                     verbose=False, return_counts=False):
+    if frame is None or frame.size == 0:
+        return (frame, (0, 0)) if return_counts else frame
 
     detected_vehicles = []
 
     img_blend_out = frame.copy()
 
-    # return bounding boxes detected by SSD
-    ssd_bboxes = process_frame_bgr_with_SSD(frame, ssd_model, bbox_helper, allow_classes=[7], min_confidence=0.3)
+    ssd_bboxes = process_frame_bgr_with_SSD(frame, ssd_model, bbox_helper,
+                                            allow_classes=allow_classes,
+                                            min_confidence=min_confidence)
     for row in ssd_bboxes:
         label, confidence, x_min, y_min, x_max, y_max = row
         x_min = int(round(x_min * frame.shape[1]))
@@ -26,18 +34,20 @@ def process_pipeline(frame, verbose=False):
 
         proposed_vehicle = Vehicle(x_min, y_min, x_max, y_max)
 
-        if not detected_vehicles:
-            detected_vehicles.append(proposed_vehicle)
-        else:
-            for i, vehicle in enumerate(detected_vehicles):
-                if vehicle.contains(*proposed_vehicle.center):
-                    pass  # go on, bigger bbox already detected in that position
-                elif proposed_vehicle.contains(*vehicle.center):
-                    detected_vehicles[i] = proposed_vehicle  # keep the bigger window
-                else:
-                    detected_vehicles.append(proposed_vehicle)
+        # fuse near-duplicate detections of the same object (IoU-style NMS);
+        # partially overlapping but distinct vehicles are kept separate
+        best_iou, best_idx = 0.0, None
+        for i, vehicle in enumerate(detected_vehicles):
+            overlap = vehicle.iou(proposed_vehicle)
+            if overlap > best_iou:
+                best_iou, best_idx = overlap, i
 
-    # draw bounding boxes of detected vehicles on frame
+        if best_idx is not None and best_iou >= 0.5:
+            detected_vehicles[best_idx] = detected_vehicles[best_idx].merged_with(
+                proposed_vehicle)
+        else:
+            detected_vehicles.append(proposed_vehicle)
+
     for vehicle in detected_vehicles:
         vehicle.draw(img_blend_out, color=(0, 255, 255), thickness=2)
 
@@ -45,73 +55,136 @@ def process_pipeline(frame, verbose=False):
     off_x, off_y = 30, 30
     thumb_h, thumb_w = (96, 128)
 
-    # add a semi-transparent rectangle to highlight thumbnails on the left
-    mask = cv2.rectangle(frame.copy(), (0, 0), (w, 2 * off_y + thumb_h), (0, 0, 0), thickness=cv2.FILLED)
-    img_blend_out = cv2.addWeighted(src1=mask, alpha=0.3, src2=img_blend_out, beta=0.8, gamma=0)
+    mask = cv2.rectangle(frame.copy(), (0, 0), (w, 2 * off_y + thumb_h),
+                         (0, 0, 0), thickness=cv2.FILLED)
+    img_blend_out = cv2.addWeighted(src1=mask, alpha=0.3,
+                                    src2=img_blend_out, beta=0.8, gamma=0)
 
-    # create list of thumbnails s.t. this can be later sorted for drawing
     vehicle_thumbs = []
-    for i, vehicle in enumerate(detected_vehicles):
+    for vehicle in detected_vehicles:
         x_min, y_min, x_max, y_max = vehicle.coords
-        vehicle_thumbs.append(frame[y_min:y_max, x_min:x_max, :])
+        x_min = max(0, min(x_min, w))
+        x_max = max(0, min(x_max, w))
+        y_min = max(0, min(y_min, h))
+        y_max = max(0, min(y_max, h))
+        thumb = frame[y_min:y_max, x_min:x_max, :]
+        if thumb.size > 0 and thumb.shape[0] > 1 and thumb.shape[1] > 1:
+            vehicle_thumbs.append(thumb)
 
-    # draw detected car thumbnails on the top of the frame
-    for i, thumbnail in enumerate(sorted(vehicle_thumbs, key=lambda x: np.mean(x), reverse=True)):
+    def thumb_score(thumb):
+        return float(np.mean(thumb)) if thumb.size else 0.0
+
+    for i, thumbnail in enumerate(sorted(vehicle_thumbs, key=thumb_score,
+                                         reverse=True)):
+        start_x = 300 + (i + 1) * off_x + i * thumb_w
+        start_y = off_y
+        if start_y + thumb_h > h or start_x + thumb_w > w:
+            break
         vehicle_thumb = cv2.resize(thumbnail, dsize=(thumb_w, thumb_h))
-        start_x = 300 + (i+1) * off_x + i * thumb_w
-        img_blend_out[off_y:off_y + thumb_h, start_x:start_x + thumb_w, :] = vehicle_thumb
+        img_blend_out[start_y:start_y + thumb_h,
+                      start_x:start_x + thumb_w, :] = vehicle_thumb
 
-    # write the counter of cars detected
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(img_blend_out, 'Vehicles in sight: {:02d}'.format(len(detected_vehicles)),
                 (20, off_y + thumb_h // 2), font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
+    if verbose:
+        print('  detections={} kept_vehicles={}'.format(len(ssd_bboxes),
+                                                         len(detected_vehicles)))
+
+    if return_counts:
+        return img_blend_out, (len(ssd_bboxes), len(detected_vehicles))
     return img_blend_out
 
 
-if __name__ == '__main__':
+def iter_images(input_path):
+    if path.isdir(input_path):
+        for name in sorted(os.listdir(input_path)):
+            if name.lower().endswith(IMAGE_EXTS):
+                yield name, path.join(input_path, name)
+    elif path.isfile(input_path) and input_path.lower().endswith(IMAGE_EXTS):
+        yield path.basename(input_path), input_path
 
-    mode = 'images'
 
-    if mode == 'video':
+def main():
+    parser = argparse.ArgumentParser(description='Run SSD vehicle detection.')
+    parser.add_argument('--input', required=True,
+                        help='path to an input image or video file')
+    parser.add_argument('--output', default='out/ssd',
+                        help='output directory (default: out/ssd)')
+    parser.add_argument('--conf', type=float, default=0.3,
+                        help='minimum confidence threshold (default: 0.3)')
+    parser.add_argument('--no-display', action='store_true',
+                        help='do not open display windows')
+    args = parser.parse_args()
 
-        video_file = 'project_video.mp4'
+    if not path.exists(args.input):
+        parser.error('input not found: {}'.format(args.input))
 
-        cap_in = cv2.VideoCapture(video_file)
-        video_out_dir = '../../../NANODEGREE/term_1/project_5_vehicle_detection/frames_out'
+    os.makedirs(args.output, exist_ok=True)
+
+    ssd_model, bbox_helper, color_palette = get_SSD_model()
+
+    display = not args.no_display
+
+    if args.input.lower().endswith(VIDEO_EXTS):
+        cap_in = cv2.VideoCapture(args.input)
+        if not cap_in.isOpened():
+            parser.error('could not open video: {}'.format(args.input))
 
         f_counter = 0
         while True:
-
             ret, frame = cap_in.read()
+            if not ret:
+                break
+            f_counter += 1
 
-            if ret:
+            frame_out = process_pipeline(frame, ssd_model, bbox_helper,
+                                         color_palette,
+                                         allow_classes=VEHICLE_CLASS_IDS,
+                                         min_confidence=args.conf)
+            cv2.imwrite(path.join(args.output, '{:06d}.jpg'.format(f_counter)),
+                        frame_out)
 
-                f_counter += 1
-
-                frame_out = process_pipeline(frame, verbose=1)
-
-                cv2.imwrite(path.join(video_out_dir, '{:06d}.jpg'.format(f_counter)), frame_out)
-
-                cv2.imshow('', frame_out)
+            if display:
+                cv2.imshow('ssd', frame_out)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
-        # When everything done, release the capture
         cap_in.release()
+        if display:
+            cv2.destroyAllWindows()
+        print('processed {} frames -> {}'.format(f_counter, args.output))
+        return
+
+    images = list(iter_images(args.input))
+    if not images:
+        parser.error('no images found at: {}'.format(args.input))
+
+    for name, img_path in images:
+        frame = cv2.imread(img_path)
+        if frame is None:
+            print('{}: FAILED TO READ'.format(name))
+            continue
+
+        frame_out, (n_raw, n_kept) = process_pipeline(
+            frame, ssd_model, bbox_helper, color_palette,
+            allow_classes=VEHICLE_CLASS_IDS, min_confidence=args.conf,
+            return_counts=True)
+
+        out_path = path.join(args.output, name)
+        cv2.imwrite(out_path, frame_out)
+
+        print('{}: {} vehicle(s) detected ({} merged) -> {}'.format(
+            name, n_raw, n_kept, out_path))
+
+        if display:
+            cv2.imshow('ssd', frame_out)
+            cv2.waitKey(1)
+
+    if display:
         cv2.destroyAllWindows()
-        exit()
-
-    else:
-
-        test_img_dir = 'test_images'
-        for test_img in os.listdir(test_img_dir):
-
-            frame = cv2.imread(os.path.join(test_img_dir, test_img))
-
-            frame_out = process_pipeline(frame, verbose=False)
-
-            cv2.imwrite('output_images/{}'.format(test_img), frame_out)
 
 
-
+if __name__ == '__main__':
+    main()

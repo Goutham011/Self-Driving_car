@@ -26,10 +26,15 @@ class Line:
         return np.array([self.x1, self.y1, self.x2, self.y2])
 
     def set_coords(self, x1, y1, x2, y2):
-        self.x1 = x1
-        self.y1 = y1
-        self.x2 = x2
-        self.y2 = y2
+        self.x1 = np.float32(x1)
+        self.y1 = np.float32(y1)
+        self.x2 = np.float32(x2)
+        self.y2 = np.float32(y2)
+        self.slope = self.compute_slope()
+        self.bias = self.compute_bias()
+
+    def __repr__(self):
+        return 'Line(({}, {}), ({}, {}))'.format(self.x1, self.y1, self.x2, self.y2)
 
     def draw(self, img, color=[255, 0, 0], thickness=10):
         # Convert coordinates to int before drawing

@@ -1,40 +1,56 @@
-import cv2
+import argparse
+import os
 import os.path as path
-from SSD import process_frame_bgr_with_SSD, show_SSD_results, get_SSD_model
+
+import cv2
+
+from SSD import (get_SSD_model, process_frame_bgr_with_SSD, show_SSD_results,
+                 VEHICLE_CLASS_IDS)
 
 
-if __name__ == '__main__':
+def main():
+    parser = argparse.ArgumentParser(
+        description='Run SSD vehicle detection on a video and write frames.')
+    parser.add_argument('--input', required=True, help='path to input video')
+    parser.add_argument('--output', default='out/ssd/video',
+                        help='output directory for frames '
+                             '(default: out/ssd/video)')
+    parser.add_argument('--conf', type=float, default=0.3,
+                        help='minimum confidence threshold (default: 0.3)')
+    args = parser.parse_args()
+
+    if not path.isfile(args.input):
+        parser.error('input video not found: {}'.format(args.input))
+
+    os.makedirs(args.output, exist_ok=True)
 
     SSD_net, bbox_helper, color_palette = get_SSD_model()
 
-    # video_file = 'project_video.mp4'
-    video_file = 'C:/Users/minotauro/Google Drive/DEMO_SMARTAREA/modena.mp4'
-    # out_path   = 'C:/Users/minotauro/Google Drive/DEMO_SMARTAREA/out_frames'
-    out_path = 'C:/temp_frames'
-
-    cap = cv2.VideoCapture(video_file)
+    cap = cv2.VideoCapture(args.input)
+    if not cap.isOpened():
+        parser.error('could not open video: {}'.format(args.input))
 
     counter = 0
+    total_dets = 0
     while True:
-
         ret, frame = cap.read()
+        if not ret:
+            break
 
-        if ret:
-            bboxes = process_frame_bgr_with_SSD(frame, SSD_net, bbox_helper,
-                                                min_confidence=0.2,
-                                                allow_classes=[2, 7, 14, 15])
+        bboxes = process_frame_bgr_with_SSD(frame, SSD_net, bbox_helper,
+                                            min_confidence=args.conf,
+                                            allow_classes=VEHICLE_CLASS_IDS)
+        total_dets += len(bboxes)
+        show_SSD_results(bboxes, frame, color_palette=color_palette)
 
-            show_SSD_results(bboxes, frame, color_palette=color_palette)
+        out_file = path.join(args.output, '{:06d}.jpg'.format(counter))
+        cv2.imwrite(out_file, frame)
+        counter += 1
 
-            cv2.imwrite(path.join(out_path, '{:06d}.jpg'.format(counter)), frame)
-            # cv2.imshow('', frame)
-            # if cv2.waitKey(1) & 0xFF == ord('q'):
-            #     break
-
-            counter += 1
-
-
-    # When everything done, release the capture
     cap.release()
-    cv2.destroyAllWindows()
-    exit()
+    print('wrote {} frames to {} ({} vehicle detections total)'.format(
+        counter, args.output, total_dets))
+
+
+if __name__ == '__main__':
+    main()
