@@ -16,6 +16,7 @@ certifi>=2023.7.22
 
 # Traffic light detection - YOLOv3 (PyTorch) + voice alerts
 torch>=2.0
+torchvision>=0.15
 pyttsx3>=2.9
 
 # Dataset / data preparation utilities
