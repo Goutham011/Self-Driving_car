@@ -1,6 +1,6 @@
 # Core scientific stack
 numpy>=1.26,<3
-opencv-python>=4.8
+opencv-python>=4.8,<5
 matplotlib>=3.7
 
 # Lane detection
